@@ -8,12 +8,12 @@ import net.runelite.client.config.ConfigItem;
 public interface GimBankDiscordConfig extends Config
 {
 	@ConfigItem(
-		keyName = "greeting",
-		name = "Welcome Greeting",
-		description = "The message to show to the user when they login"
+			keyName = "webhook",
+			name = "Discord Webhook",
+			description = "The webhook used to send messages to Discord."
 	)
-	default String greeting()
+	default String webhook()
 	{
-		return "Hello";
+		return "";
 	}
 }

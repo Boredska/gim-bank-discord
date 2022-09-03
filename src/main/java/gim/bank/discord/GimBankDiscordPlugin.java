@@ -3,14 +3,27 @@ package gim.bank.discord;
 import com.google.inject.Provides;
 import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
-import net.runelite.api.ChatMessageType;
-import net.runelite.api.Client;
-import net.runelite.api.GameState;
-import net.runelite.api.events.GameStateChanged;
+import net.runelite.api.*;
+import net.runelite.api.events.ChatMessage;
+import net.runelite.api.events.WidgetClosed;
+import net.runelite.api.events.WidgetLoaded;
+import net.runelite.api.widgets.Widget;
+import net.runelite.api.widgets.WidgetID;
+import net.runelite.api.widgets.WidgetInfo;
+import net.runelite.api.widgets.WidgetItem;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
+import net.runelite.client.game.chatbox.ChatboxPanelManager;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
+import net.runelite.client.game.ItemManager;
+import okhttp3.*;
+
+import java.io.IOException;
+import java.util.*;
+import java.util.stream.Collectors;
+
+import static net.runelite.http.api.RuneLiteAPI.GSON;
 
 @Slf4j
 @PluginDescriptor(
@@ -23,6 +36,17 @@ public class GimBankDiscordPlugin extends Plugin
 
 	@Inject
 	private GimBankDiscordConfig config;
+
+	@Inject
+	private OkHttpClient okHttpClient;
+
+	@Inject
+	private ItemManager itemManager;
+
+	@Inject
+	private ChatboxPanelManager chatboxPanelManager;
+
+	private List<SimpleItem> inventoryItems;
 
 	@Override
 	protected void startUp() throws Exception
@@ -37,13 +61,236 @@ public class GimBankDiscordPlugin extends Plugin
 	}
 
 	@Subscribe
-	public void onGameStateChanged(GameStateChanged gameStateChanged)
+	void onWidgetLoaded(WidgetLoaded event)
 	{
-		if (gameStateChanged.getGameState() == GameState.LOGGED_IN)
+		if (event.getGroupId() != WidgetID.GROUP_STORAGE_INVENTORY_GROUP_ID)
 		{
-			client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", "GIM Bank Discord says " + config.greeting(), null);
+			return;
+		}
+
+		log.info("Opened GIM Bank");
+
+		if(client.getItemContainer(InventoryID.GROUP_STORAGE_INV) != null)
+		{
+			inventoryItems = getItemsFromContainer(client.getItemContainer(InventoryID.GROUP_STORAGE_INV));
 		}
 	}
+
+	@Subscribe
+	void onWidgetClosed(WidgetClosed event)
+	{
+		if (event.getGroupId() != 293)
+		{
+			return;
+		}
+
+		String messageText = client.getWidget(293,1).getText();
+
+		if(!messageText.contains("Saving"))
+		{
+			return;
+		}
+
+		log.info("SAVING!");
+
+		afterClose();
+	}
+
+	private void afterClose()
+	{
+		List<SimpleItem> exitItems = getItemsFromContainer(client.getItemContainer(InventoryID.INVENTORY));
+		List<SimpleItem> diff = getDiff(canonicalizeItemList(inventoryItems), canonicalizeItemList(exitItems));
+
+		if(diff.size() > 0)
+		{
+			sendDiscordMessage(createDiscordMessage(diff));
+		}
+
+		inventoryItems = Collections.emptyList();
+	}
+
+	private String createDiscordMessage(List<SimpleItem> diffList)
+	{
+		String message = "";
+
+		String username = client.getLocalPlayer().getName();
+		message+= username + " banked\n```\n";
+		for(int i = 0; i < diffList.size(); i++)
+		{
+			if(diffList.get(i).getQuantity() > 0)
+			{
+				message+= "- ";
+			}
+			else{
+				message+= "+ ";
+			}
+
+			ItemComposition composition = itemManager.getItemComposition(diffList.get(i).getItemId());
+			message += composition.getName() + " x " + Math.abs(diffList.get(i).getQuantity());
+			message += "\n";
+		}
+		message+= "```";
+
+
+		return message;
+	}
+
+	private List<SimpleItem> getDiff(List<SimpleItem> before, List<SimpleItem> after)
+	{
+		// This part taken from https://github.com/Lazyfaith/runelite-bank-memory-plugin/blob/master/src/main/java/com/bankmemory/ItemListDiffGenerator.java
+
+		Map<Integer, Integer> beforeItems = new HashMap<>();
+		Map<Integer, Integer> afterItems = new HashMap<>();
+		after.forEach(i -> afterItems.put(i.getItemId(), i.getQuantity()));
+		List<SimpleItem> results = new ArrayList<>();
+		for (SimpleItem i : before) {
+			beforeItems.put(i.getItemId(), i.getQuantity());
+			int diff = afterItems.getOrDefault(i.getItemId(), 0) - i.getQuantity();
+			if (diff != 0) {
+				results.add(new SimpleItem(i.getItemId(), diff));
+			}
+		}
+		for (SimpleItem i : after) {
+			if (!beforeItems.containsKey(i.getItemId())) {
+				results.add(i);
+			}
+		}
+
+		return results;
+	}
+
+	private List<SimpleItem> canonicalizeItemList(List<SimpleItem> itemList)
+	{
+		List<SimpleItem> canonList = new ArrayList<>();
+
+		for(int i = 0; i < itemList.size(); i++)
+		{
+			int canonId = itemManager.canonicalize(itemList.get(i).getItemId());
+			boolean add = true;
+
+
+			for(int j = 0; j < canonList.size(); j++)
+			{
+				if(canonList.get(j).getItemId() == canonId){
+					add = false;
+					int before = canonList.get(j).getQuantity();
+					canonList.remove(j);
+					canonList.add(new SimpleItem(canonId,itemList.get(i).getQuantity() + before));
+				}
+			}
+
+			if(add)
+			{
+				canonList.add(new SimpleItem(canonId,itemList.get(i).getQuantity()));
+			}
+		}
+		return canonList;
+	}
+
+	private List<SimpleItem> getItemsFromContainer(ItemContainer storage)
+	{
+		Item[] items = storage.getItems();
+		if(items.length == 0) return new ArrayList<>();
+		List<Item> itemList = Arrays.asList(items);
+
+		if(itemList.size() == 28)
+		{
+			itemList = itemList.stream().filter(p -> p.getId() > -1).collect(Collectors.toList());
+		}
+
+		if(itemList.size() == 0)
+		{
+			return new ArrayList<>();
+		}
+
+		items = new Item[itemList.size()];
+		itemList.toArray(items);
+
+		Arrays.sort(items, new Comparator<Item>() {
+			public int compare(Item b1, Item b2) {
+				if (b1.getId() > b2.getId())
+				{
+					return +1;
+				}
+				else if (b1.getId() < b2.getId())
+				{
+					return -1;
+				}
+				else
+				{
+					return 0;
+				}
+			}
+		});
+
+		List<SimpleItem> containerItems = new ArrayList<>();
+
+		for(int i = 0; i < items.length;i++)
+		{
+			ItemComposition composition = itemManager.getItemComposition(items[i].getId());
+
+			Item[] finalItems = items;
+			int finalI = i;
+			boolean alreadyIn = containerItems.stream().anyMatch(o -> o.getItemId() == finalItems[finalI].getId());
+			if(alreadyIn)
+			{
+				for(int j = 0; j < containerItems.size(); j++)
+				{
+					if(containerItems.get(j).getItemId() == items[i].getId())
+					{
+						int count = containerItems.get(j).getQuantity();
+						containerItems.remove(j);
+						containerItems.add(new SimpleItem(composition.getId(),count + items[i].getQuantity()));
+					}
+				}
+			}else
+			{
+				containerItems.add(new SimpleItem(composition.getId(),items[i].getQuantity()));
+			}
+		}
+
+		return containerItems;
+	}
+
+	private void sendDiscordMessage(String message)
+	{
+		if(config.webhook().trim().isEmpty())
+		{
+			log.warn("Missing Discord webhook. Cannot send message.");
+			return;
+		}
+
+		DiscordWebhookBody discordWebhookBody = new DiscordWebhookBody();
+		discordWebhookBody.setContent(message);
+
+		HttpUrl url = HttpUrl.parse(config.webhook().trim());
+		MultipartBody.Builder requestBodyBuilder = new MultipartBody.Builder()
+				.setType(MultipartBody.FORM)
+				.addFormDataPart("payload_json", GSON.toJson(discordWebhookBody));
+
+		RequestBody requestBody = requestBodyBuilder.build();
+		Request request = new Request.Builder()
+				.url(url)
+				.post(requestBody)
+				.build();
+
+		okHttpClient.newCall(request).enqueue(new Callback()
+		{
+			@Override
+			public void onFailure(Call call, IOException e)
+			{
+				log.error("Error submitting message to Discord webhook.", e);
+			}
+
+			@Override
+			public void onResponse(Call call, Response response) throws IOException
+			{
+				log.info("Successfully sent message to Discord.");
+				response.close();
+			}
+		});
+	}
+
 
 	@Provides
 	GimBankDiscordConfig provideConfig(ConfigManager configManager)
