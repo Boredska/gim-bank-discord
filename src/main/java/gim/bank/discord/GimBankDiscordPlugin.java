@@ -114,7 +114,7 @@ public class GimBankDiscordPlugin extends Plugin
 		String message = "";
 
 		String username = client.getLocalPlayer().getName();
-		message+= username + " banked\n```\n";
+		message+= username + " banked\n```diff\n";
 		for(int i = 0; i < diffList.size(); i++)
 		{
 			if(diffList.get(i).getQuantity() > 0)
