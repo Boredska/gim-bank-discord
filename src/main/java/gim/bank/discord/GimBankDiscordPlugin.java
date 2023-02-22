@@ -46,7 +46,7 @@ public class GimBankDiscordPlugin extends Plugin
 	@Inject
 	private ChatboxPanelManager chatboxPanelManager;
 
-	private List<SimpleItem> inventoryItems;
+	private List<SimpleItem> inventoryItems = Collections.emptyList();
 
 	@Override
 	protected void startUp() throws Exception
