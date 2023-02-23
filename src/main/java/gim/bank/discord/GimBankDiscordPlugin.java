@@ -46,7 +46,7 @@ public class GimBankDiscordPlugin extends Plugin
 	@Inject
 	private ChatboxPanelManager chatboxPanelManager;
 
-	private List<SimpleItem> inventoryItems;
+	private List<SimpleItem> inventoryItems = Collections.emptyList();
 
 	@Override
 	protected void startUp() throws Exception
@@ -114,7 +114,7 @@ public class GimBankDiscordPlugin extends Plugin
 		String message = "";
 
 		String username = client.getLocalPlayer().getName();
-		message+= username + " banked\n```\n";
+		message+= username + " banked\n```diff\n";
 		for(int i = 0; i < diffList.size(); i++)
 		{
 			if(diffList.get(i).getQuantity() > 0)
